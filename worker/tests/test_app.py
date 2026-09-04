@@ -301,6 +301,10 @@ class WorkspaceSafetyTest(unittest.TestCase):
             ),
             [],
         )
+        wrapped = parse_text_tool_calls(
+            '<tool_call>\n{"name":"read_file","arguments":{"path":"hello.txt"}}\n</tool_call>'
+        )
+        self.assertEqual(wrapped[0]["function"]["name"], "read_file")
 
 
 class JobRunnerSafetyTest(unittest.TestCase):

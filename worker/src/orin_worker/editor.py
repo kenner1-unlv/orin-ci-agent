@@ -305,8 +305,12 @@ TOOLS = [
 def parse_text_tool_calls(content: str) -> list[dict[str, Any]]:
     """Adapt strict Qwen textual tool envelopes when Ollama does not parse them."""
     calls: list[dict[str, Any]] = []
+    stripped = content.strip()
+    wrapped = re.fullmatch(r"<tool_call>\s*(.*?)\s*</tool_call>", stripped, re.DOTALL)
+    if wrapped:
+        stripped = wrapped.group(1)
     try:
-        envelope = json.loads(content)
+        envelope = json.loads(stripped)
     except (json.JSONDecodeError, TypeError):
         envelope = None
     if (
@@ -425,6 +429,8 @@ class JobRunner:
                     "ordinal": ordinal,
                     "wall_seconds": round(time.monotonic() - turn_started, 3),
                     "request_chars": request_chars,
+                    "response_content": _trim(str(message.get("content") or ""), 2000),
+                    "native_tool_call_count": len(message.get("tool_calls") or []),
                 }
                 metrics = getattr(self.model, "last_metrics", None)
                 if metrics:
