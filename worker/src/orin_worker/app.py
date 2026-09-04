@@ -29,7 +29,7 @@ def settings() -> tuple[str, int, EditorSettings]:
         artifact_dir=Path(os.environ.get("WORKER_ARTIFACT_DIR", str(state_dir / "artifacts"))),
         model_url=os.environ.get("WORKER_MODEL_URL", "http://127.0.0.1:11434"),
         model=os.environ.get("WORKER_MODEL", "qwen3-coder:30b-a3b-q4_K_M"),
-        max_iterations=int(os.environ.get("WORKER_MAX_ITERATIONS", "20")),
+        max_iterations=int(os.environ.get("WORKER_MAX_ITERATIONS", "30")),
         timeout_seconds=int(os.environ.get("WORKER_JOB_TIMEOUT", "300")),
         think=os.environ.get("WORKER_MODEL_THINK", "false").lower() == "true",
         context_tokens=int(os.environ.get("WORKER_MODEL_CONTEXT", "32768")),

@@ -108,6 +108,22 @@ After inspecting an approved artifact, the CI agent can create a local commit:
 
 Promotion is intentionally local. Publication and deployment are separate decisions.
 
+Chain an approved promotion into a new clean Orin workspace for the next bounded job:
+
+```powershell
+./scripts/handoff-promoted-worker-base.ps1 `
+  -PromotionArtifact '.ci-artifacts/<job-id>-promotion.json' `
+  -Workspace '.ci-sandboxes/<job-id>/worktree' `
+  -RemoteWorkspace '<new-clean-workspace-name>' `
+  -Target sauce-bot `
+  -Output '.ci-artifacts/<job-id>-handoff.json'
+```
+
+The handoff accepts only the exact clean commit named by a successful CI promotion
+artifact. Orin verifies the bundle digest and commit, creates a new detached worktree
+without a Git remote, and records a durable handoff marker. Existing remote workspaces
+are never overwritten.
+
 ## Project status
 
 The bounded worker, model runtime, repository evaluation harness, local sandbox intake, independent review gate, and CI-only local promotion are implemented and tested. The next validation is a real medium-sized coding task in a clean external repository, followed by human review of its CI-approved patch.

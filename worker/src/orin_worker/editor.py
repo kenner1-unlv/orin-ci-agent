@@ -42,7 +42,7 @@ class EditorSettings:
     artifact_dir: Path
     model_url: str = "http://127.0.0.1:11434"
     model: str = "qwen3-coder:30b-a3b-q4_K_M"
-    max_iterations: int = 20
+    max_iterations: int = 30
     max_file_bytes: int = 1_000_000
     max_output_chars: int = 65_536
     max_read_lines: int = 400
@@ -186,6 +186,19 @@ class Workspace:
         self._write(target, updated)
         return f"updated {path}"
 
+    def replace_lines(self, path: str, start_line: int, end_line: int, new: str) -> str:
+        """Replace an inclusive, previously-read line range without matching a large text block."""
+        target = self._path(path)
+        content = self._read_text(target)
+        lines = content.splitlines(keepends=True)
+        if start_line < 1 or end_line < start_line or end_line > len(lines):
+            raise JobRejected("replacement line range is invalid")
+        if end_line - start_line + 1 > self.max_read_lines:
+            raise JobRejected(f"replacement range exceeds {self.max_read_lines} lines")
+        updated = "".join(lines[:start_line - 1]) + new + "".join(lines[end_line:])
+        self._write(target, updated)
+        return f"updated {path} lines {start_line}-{end_line}"
+
     def write_file(self, path: str, content: str) -> str:
         target = self._path(path, may_create=True)
         self._write(target, content)
@@ -283,6 +296,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "read_file", "description": "Read a bounded line range from one UTF-8 text file. Defaults to its first 400 lines; use search to locate content and request a narrow range.", "parameters": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}}}}},
     {"type": "function", "function": {"name": "search", "description": "Literal text search in repository files.", "parameters": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}, "path": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "replace_text", "description": "Replace text that occurs exactly once in a file.", "parameters": {"type": "object", "required": ["path", "old", "new"], "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "replace_lines", "description": "Replace an inclusive line range from a recent read_file result. Prefer this when an exact text replacement is fragile. Include any required trailing newline in new.", "parameters": {"type": "object", "required": ["path", "start_line", "end_line", "new"], "properties": {"path": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "new": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "write_file", "description": "Write a required product or test file inside the repository. Never create scratch, demo, manual verification, or duplicate test files.", "parameters": {"type": "object", "required": ["path", "content"], "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "finish", "description": "Finish after edits and checks are complete.", "parameters": {"type": "object", "required": ["summary"], "properties": {"summary": {"type": "string"}}}}},
 ]
@@ -366,6 +380,7 @@ class JobRunner:
             "content": (
                 "You are a bounded coding editor. Work only through the provided tools. "
                 "Inspect before editing, make the smallest change satisfying the instruction, "
+                "Use replace_lines on a recently read narrow range when replace_text would require a large or fragile exact match. "
                 "follow the repository's existing file and test layout, and avoid ad-hoc verification scripts. "
                 "If the instruction does not require a new file or new tests, do not create any new file; use approved checks for verification. "
                 "When adding an alias or fallback, preserve existing behavior and precedence and check overlap cases. "
@@ -376,6 +391,7 @@ class JobRunner:
             ),
         }, {"role": "user", "content": f"Instruction: {instruction}\nApproved checks: {', '.join(checks)}"}]
         summary = "Model completed without a summary."
+        repeated_calls: dict[str, int] = {}
         try:
             for ordinal in range(1, self.config.max_iterations + 1):
                 if time.monotonic() - started > self.config.timeout_seconds:
@@ -411,7 +427,23 @@ class JobRunner:
                     arguments = function.get("arguments", {})
                     if isinstance(arguments, str):
                         arguments = json.loads(arguments)
-                    result = self._invoke(workspace, name, arguments, set(checks))
+                    signature = json.dumps(
+                        {"name": name, "arguments": arguments}, sort_keys=True, separators=(",", ":")
+                    )
+                    repeated_calls[signature] = repeated_calls.get(signature, 0) + 1
+                    repeat_count = repeated_calls[signature]
+                    if repeat_count >= 5:
+                        raise JobFailed(f"model repeated the same {name} call without progress")
+                    try:
+                        result = self._invoke(workspace, name, arguments, set(checks))
+                    except JobRejected as exc:
+                        if name not in {"replace_text", "replace_lines"}:
+                            raise
+                        result = {"accepted": False, "error": str(exc)}
+                    if name in {"replace_text", "replace_lines", "write_file"} and not (
+                        isinstance(result, dict) and result.get("accepted") is False
+                    ):
+                        repeated_calls.clear()
                     record["tool_calls"].append({"ordinal": ordinal, "name": name, "result": result})
                     if name == "finish":
                         summary = arguments["summary"]
@@ -420,6 +452,14 @@ class JobRunner:
                         messages.append({"role": "user", "content": f"Tool result for {name}:\n{json.dumps(result)}\nContinue using a tool call."})
                     else:
                         messages.append({"role": "tool", "tool_name": name, "content": json.dumps(result)})
+                    if repeat_count == 3:
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Recovery required: this identical tool call has made no progress three times. "
+                                "Do not repeat it. Re-read a narrow current range, then use replace_lines or choose a different edit."
+                            ),
+                        })
                 self._save(record)
                 if finished:
                     break
@@ -474,6 +514,10 @@ class JobRunner:
             return workspace.search(args["query"], args.get("path", "."))
         if name == "replace_text":
             return workspace.replace_text(args["path"], args["old"], args["new"])
+        if name == "replace_lines":
+            return workspace.replace_lines(
+                args["path"], args["start_line"], args["end_line"], args["new"]
+            )
         if name == "write_file":
             return workspace.write_file(args["path"], args["content"])
         if name == "run_check":

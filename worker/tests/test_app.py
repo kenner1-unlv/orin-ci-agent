@@ -268,6 +268,17 @@ class WorkspaceSafetyTest(unittest.TestCase):
         with self.assertRaises(JobRejected):
             self.workspace.replace_text("hello.txt", "missing", "new")
 
+    def test_line_range_replacement_uses_recent_line_coordinates(self) -> None:
+        (self.repo / "hello.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+        result = self.workspace.replace_lines("hello.txt", 2, 2, "changed\n")
+        self.assertEqual(result, "updated hello.txt lines 2-2")
+        self.assertEqual(
+            (self.repo / "hello.txt").read_text(encoding="utf-8"),
+            "one\nchanged\nthree\n",
+        )
+        with self.assertRaisesRegex(JobRejected, "range is invalid"):
+            self.workspace.replace_lines("hello.txt", 4, 4, "nope\n")
+
     def test_qwen_text_tool_markup_is_strictly_adapted(self) -> None:
         calls = parse_text_tool_calls(
             "<function=replace_text><parameter=path>hello.txt</parameter>"
@@ -320,6 +331,33 @@ class JobRunnerSafetyTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["error"], "JobRejected")
         self.assertEqual(result["diff"], "")
+
+    def test_failed_exact_replace_can_recover_with_line_range(self) -> None:
+        runner = JobRunner(self.config, FakeModel([
+            {"role": "assistant", "tool_calls": [{"function": {"name": "replace_text", "arguments": {
+                "path": "hello.txt", "old": "missing", "new": "goodbye"
+            }}}]},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "replace_lines", "arguments": {
+                "path": "hello.txt", "start_line": 1, "end_line": 1, "new": "goodbye world\n"
+            }}}]},
+            {"role": "assistant", "tool_calls": [{"function": {
+                "name": "finish", "arguments": {"summary": "Recovered."}
+            }}]},
+        ]))
+        result = runner.run({"kind": "edit", "workspace": "fixture", "instruction": "Change it."})
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["tool_calls"][0]["result"]["accepted"], False)
+        self.assertIn("+goodbye world", result["diff"])
+
+    def test_repeated_identical_call_fails_boundedly(self) -> None:
+        call = {"role": "assistant", "tool_calls": [{"function": {
+            "name": "read_file", "arguments": {"path": "hello.txt"}
+        }}]}
+        runner = JobRunner(self.config, FakeModel([call] * 5))
+        result = runner.run({"kind": "edit", "workspace": "fixture", "instruction": "Change it."})
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("repeated the same read_file call", result["message"])
+        self.assertEqual(len(result["tool_calls"]), 4)
 
     def test_model_must_explicitly_finish(self) -> None:
         runner = JobRunner(self.config, FakeModel([

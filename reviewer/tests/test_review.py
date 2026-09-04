@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 import control_plane_reviewer.review as review_module
-from control_plane_reviewer.review import ReviewError, canonical_patch, review
+from control_plane_reviewer.review import ReviewError, canonical_patch, check_command, review
 
 
 class ReviewTests(unittest.TestCase):
@@ -78,6 +78,23 @@ class ReviewTests(unittest.TestCase):
         self.write_job()
         artifact = self.run_review(checks=("python_unittest",))
         self.assertIn("CHECK_FAILED", {item["code"] for item in artifact["findings"]})
+
+    def test_pytest_project_uses_isolated_declared_runner(self) -> None:
+        (self.repo / "pyproject.toml").write_text(
+            "[project]\nname='sample'\nversion='0.1.0'\n"
+            "[project.optional-dependencies]\ndev=['pytest>=8']\n"
+            "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+            encoding="utf-8",
+        )
+        command = check_command(self.repo, "python_unittest")
+        self.assertIn("--isolated", command)
+        self.assertIn("pytest", command)
+        self.assertIn("--basetemp", command)
+
+    def test_non_pytest_project_keeps_unittest_runner(self) -> None:
+        command = check_command(self.repo, "python_unittest")
+        self.assertEqual(sys.executable, command[0])
+        self.assertIn("unittest", command)
 
     def test_mutating_check_is_detected(self) -> None:
         self.write_job()
