@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orin-agentic-worker"
+version = "0.1.0"
+description = "Persistent agentic worker runtime for a Jetson Orin"
+requires-python = ">=3.10"
+
+[project.scripts]
+orin-worker = "orin_worker.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

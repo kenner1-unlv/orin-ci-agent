@@ -1,0 +1,33 @@
+# Local connection and agent state
+.env
+.env.*
+!.env.example
+.agent-state/
+.worker-state/
+.tools/
+.repo-eval/
+.ci-sandboxes/
+.ci-artifacts/
+benchmarks/repo-eval-work/
+worker/config/worker.env
+
+# Python and common local artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Logs and machine-specific output
+*.log
+*.pid
+dist/
+build/
+*.egg-info/
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

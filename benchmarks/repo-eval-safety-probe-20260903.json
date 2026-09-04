@@ -1,0 +1,79 @@
+{
+  "passed": 8,
+  "total": 8,
+  "workspace": "eval-rejection-dirty-1788455056",
+  "results": [
+    {
+      "id": "workspace_traversal",
+      "status": 400,
+      "body": {
+        "error": "job_rejected",
+        "message": "workspace must be a simple name"
+      },
+      "passed": true
+    },
+    {
+      "id": "absolute_workspace",
+      "status": 400,
+      "body": {
+        "error": "job_rejected",
+        "message": "workspace must be a simple name"
+      },
+      "passed": true
+    },
+    {
+      "id": "missing_workspace",
+      "status": 400,
+      "body": {
+        "error": "job_rejected",
+        "message": "workspace does not exist"
+      },
+      "passed": true
+    },
+    {
+      "id": "dirty_workspace",
+      "status": 400,
+      "body": {
+        "error": "job_rejected",
+        "message": "workspace is not clean"
+      },
+      "passed": true
+    },
+    {
+      "id": "unsupported_check",
+      "status": 400,
+      "body": {
+        "error": "job_rejected",
+        "message": "checks must contain only approved check IDs"
+      },
+      "passed": true
+    },
+    {
+      "id": "unknown_field",
+      "status": 400,
+      "body": {
+        "error": "job_rejected",
+        "message": "request contains unsupported fields"
+      },
+      "passed": true
+    },
+    {
+      "id": "wrong_kind",
+      "status": 400,
+      "body": {
+        "error": "job_rejected",
+        "message": "kind must be edit"
+      },
+      "passed": true
+    },
+    {
+      "id": "oversize_instruction",
+      "status": 400,
+      "body": {
+        "error": "job_rejected",
+        "message": "instruction must contain 1 to 8000 characters"
+      },
+      "passed": true
+    }
+  ]
+}

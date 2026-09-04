@@ -1,0 +1,21 @@
+[Unit]
+Description=Persistent Agentic Worker
+After=network-online.target orin-model.service
+Wants=network-online.target orin-model.service
+RequiresMountsFor=/data
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/persistent-worker/current
+EnvironmentFile=-%h/.config/persistent-worker/worker.env
+Environment=PYTHONPATH=%h/.local/share/persistent-worker/current/src
+ExecStart=/usr/bin/python3 -m orin_worker
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

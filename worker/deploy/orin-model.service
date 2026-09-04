@@ -1,0 +1,22 @@
+[Unit]
+Description=Orin Local Coding Model
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/data
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/persistent-worker/model-runtime.env
+Environment=OLLAMA_NUM_PARALLEL=1
+Environment=OLLAMA_MAX_LOADED_MODELS=1
+Environment=OLLAMA_FLASH_ATTENTION=1
+Environment=OLLAMA_KV_CACHE_TYPE=q8_0
+ExecStart=/data/persistent-worker/tools/ollama-current/bin/ollama serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
