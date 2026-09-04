@@ -29,6 +29,8 @@ class OllamaClientTest(unittest.TestCase):
         client = OllamaClient("http://127.0.0.1:11434", "model", 30)
         self.assertEqual(client.temperature, 0.0)
         self.assertEqual(client.seed, 0)
+        self.assertFalse(client.think)
+        self.assertEqual(client.context_tokens, 32_768)
 
 
 class BlockingModel:
@@ -135,7 +137,7 @@ class WorkerApiTest(unittest.TestCase):
         ])
         status, result = self.post({"kind": "edit", "workspace": "fixture", "instruction": "Leave it unchanged."})
         self.assertEqual(status, 201)
-        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["status"], "no_change")
         self.assertEqual(result["diff"], "")
         self.assertEqual(result["git_status"], "")
 
@@ -214,6 +216,18 @@ class WorkspaceSafetyTest(unittest.TestCase):
         for path in ("binary.dat", "large.txt"):
             with self.subTest(path=path), self.assertRaises(JobRejected):
                 self.workspace.read_file(path)
+
+    def test_read_file_returns_bounded_line_ranges(self) -> None:
+        (self.repo / "lines.txt").write_text(
+            "".join(f"line {number}\n" for number in range(1, 501)), encoding="utf-8"
+        )
+        excerpt = self.workspace.read_file("lines.txt", 120, 125)
+        self.assertTrue(excerpt.startswith("[lines 120-125 of 500]\n"))
+        self.assertIn("line 120", excerpt)
+        self.assertIn("line 125", excerpt)
+        self.assertNotIn("line 119", excerpt)
+        with self.assertRaisesRegex(JobRejected, "exceeds 400 lines"):
+            self.workspace.read_file("lines.txt", 1, 401)
 
     def test_requires_clean_repository(self) -> None:
         (self.repo / "hello.txt").write_text("dirty\n", encoding="utf-8")
@@ -306,6 +320,25 @@ class JobRunnerSafetyTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["error"], "JobRejected")
         self.assertEqual(result["diff"], "")
+
+    def test_model_must_explicitly_finish(self) -> None:
+        runner = JobRunner(self.config, FakeModel([
+            {"role": "assistant", "content": "done"},
+        ]))
+        result = runner.run({"kind": "edit", "workspace": "fixture", "instruction": "Change it."})
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["message"], "model stopped without calling finish")
+
+    def test_old_tool_results_are_compacted(self) -> None:
+        messages = [
+            {"role": "tool", "tool_name": "read_file", "content": "a" * 100},
+            {"role": "tool", "tool_name": "search", "content": "b" * 100},
+            {"role": "tool", "tool_name": "read_file", "content": "latest"},
+        ]
+        JobRunner._compact_tool_results(messages, keep=1)
+        self.assertIn('"compacted": true', messages[0]["content"])
+        self.assertIn('"compacted": true', messages[1]["content"])
+        self.assertEqual(messages[2]["content"], "latest")
 
 
 if __name__ == "__main__":
