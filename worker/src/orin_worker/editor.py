@@ -303,8 +303,22 @@ TOOLS = [
 
 
 def parse_text_tool_calls(content: str) -> list[dict[str, Any]]:
-    """Adapt Qwen's documented textual tool markup when Ollama does not parse it."""
+    """Adapt strict Qwen textual tool envelopes when Ollama does not parse them."""
     calls: list[dict[str, Any]] = []
+    try:
+        envelope = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        envelope = None
+    if (
+        isinstance(envelope, dict)
+        and isinstance(envelope.get("name"), str)
+        and isinstance(envelope.get("arguments"), dict)
+        and set(envelope) == {"name", "arguments"}
+    ):
+        return [{
+            "function": {"name": envelope["name"], "arguments": envelope["arguments"]},
+            "text_fallback": True,
+        }]
     pattern = re.compile(r"<function=([A-Za-z_][A-Za-z0-9_]*)>(.*?)</function>", re.DOTALL)
     parameter = re.compile(r"<parameter=([A-Za-z_][A-Za-z0-9_]*)>(.*?)</parameter>", re.DOTALL)
     for match in pattern.finditer(content):

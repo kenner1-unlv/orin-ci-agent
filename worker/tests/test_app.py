@@ -288,6 +288,20 @@ class WorkspaceSafetyTest(unittest.TestCase):
         self.assertEqual(calls[0]["function"]["arguments"]["path"], "hello.txt")
         self.assertEqual(parse_text_tool_calls("please run a shell"), [])
 
+    def test_qwen_json_tool_envelope_is_strictly_adapted(self) -> None:
+        calls = parse_text_tool_calls(
+            '{"name":"read_file","arguments":{"path":"hello.txt","start_line":1}}'
+        )
+        self.assertEqual(calls[0]["function"]["name"], "read_file")
+        self.assertEqual(calls[0]["function"]["arguments"]["path"], "hello.txt")
+        self.assertTrue(calls[0]["text_fallback"])
+        self.assertEqual(
+            parse_text_tool_calls(
+                '{"name":"read_file","arguments":{"path":"hello.txt"},"extra":true}'
+            ),
+            [],
+        )
+
 
 class JobRunnerSafetyTest(unittest.TestCase):
     def setUp(self) -> None:
