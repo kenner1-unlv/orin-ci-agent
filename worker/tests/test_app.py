@@ -305,6 +305,11 @@ class WorkspaceSafetyTest(unittest.TestCase):
             '<tool_call>\n{"name":"read_file","arguments":{"path":"hello.txt"}}\n</tool_call>'
         )
         self.assertEqual(wrapped[0]["function"]["name"], "read_file")
+        multiple = parse_text_tool_calls(
+            '{"name":"read_file","arguments":{"path":"one.py"}}\n'
+            '{"name":"read_file","arguments":{"path":"two.py"}}'
+        )
+        self.assertEqual([call["function"]["arguments"]["path"] for call in multiple], ["one.py", "two.py"])
 
 
 class JobRunnerSafetyTest(unittest.TestCase):

@@ -309,20 +309,31 @@ def parse_text_tool_calls(content: str) -> list[dict[str, Any]]:
     wrapped = re.fullmatch(r"<tool_call>\s*(.*?)\s*</tool_call>", stripped, re.DOTALL)
     if wrapped:
         stripped = wrapped.group(1)
+    envelopes: list[Any] = []
+    decoder = json.JSONDecoder()
+    offset = 0
     try:
-        envelope = json.loads(stripped)
+        while offset < len(stripped):
+            envelope, offset = decoder.raw_decode(stripped, offset)
+            envelopes.append(envelope)
+            while offset < len(stripped) and stripped[offset].isspace():
+                offset += 1
     except (json.JSONDecodeError, TypeError):
-        envelope = None
-    if (
+        envelopes = []
+    if envelopes and all(
         isinstance(envelope, dict)
         and isinstance(envelope.get("name"), str)
         and isinstance(envelope.get("arguments"), dict)
         and set(envelope) == {"name", "arguments"}
+        for envelope in envelopes
     ):
-        return [{
-            "function": {"name": envelope["name"], "arguments": envelope["arguments"]},
-            "text_fallback": True,
-        }]
+        return [
+            {
+                "function": {"name": envelope["name"], "arguments": envelope["arguments"]},
+                "text_fallback": True,
+            }
+            for envelope in envelopes
+        ]
     pattern = re.compile(r"<function=([A-Za-z_][A-Za-z0-9_]*)>(.*?)</function>", re.DOTALL)
     parameter = re.compile(r"<parameter=([A-Za-z_][A-Za-z0-9_]*)>(.*?)</parameter>", re.DOTALL)
     for match in pattern.finditer(content):
