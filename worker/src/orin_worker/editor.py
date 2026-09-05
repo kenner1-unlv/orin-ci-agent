@@ -511,7 +511,11 @@ class JobRunner:
                         isinstance(result, dict) and result.get("accepted") is False
                     ):
                         repeated_calls.clear()
-                    record["tool_calls"].append({"ordinal": ordinal, "name": name, "result": result})
+                    record["tool_calls"].append({
+                        "ordinal": ordinal, "name": name,
+                        "arguments": _trim(json.dumps(arguments), 4000),
+                        "result": result,
+                    })
                     if name == "finish":
                         summary = arguments["summary"]
                         finished = True
@@ -591,7 +595,13 @@ class JobRunner:
                 args["path"], args["start_line"], args["end_line"], args["new"]
             )
         if name == "insert_after":
-            return workspace.insert_after(args["path"], args["anchor"], args["lines"])
+            lines = args["lines"]
+            if isinstance(lines, str):
+                try:
+                    lines = json.loads(lines)
+                except json.JSONDecodeError:
+                    pass
+            return workspace.insert_after(args["path"], args["anchor"], lines)
         if name == "write_file":
             return workspace.write_file(args["path"], args["content"])
         if name == "run_check":
