@@ -71,7 +71,7 @@ def check_command(root: Path, check_id: str) -> tuple[str, ...]:
     if "pytest" not in project.get("tool", {}):
         return CHECKS[check_id]
     uv = shutil.which("uv") or "uv"
-    basetemp = root.parent / f".ci-pytest-{root.name}"
+    basetemp = root.parent / f".ci-pytest-{root.name}-{uuid.uuid4().hex}"
     return (
         uv, "run", "--isolated", "--project", ".", "--extra", "dev", "--python", "3.12",
         "pytest", "-q", "--tb=short", "-p", "no:cacheprovider", "--basetemp", str(basetemp),
