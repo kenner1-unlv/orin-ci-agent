@@ -199,6 +199,27 @@ class Workspace:
         self._write(target, updated)
         return f"updated {path} lines {start_line}-{end_line}"
 
+    def insert_after(self, path: str, anchor: str, lines: list[str]) -> str:
+        """Insert literal lines after one unique existing line, avoiding multiline escaping."""
+        if not anchor or "\n" in anchor or "\r" in anchor:
+            raise JobRejected("anchor must be one nonempty line fragment")
+        if not isinstance(lines, list) or not lines or len(lines) > self.max_read_lines:
+            raise JobRejected("insert lines must be a nonempty bounded list")
+        if any(not isinstance(line, str) or "\n" in line or "\r" in line for line in lines):
+            raise JobRejected("each inserted line must be a string without newline characters")
+        target = self._path(path)
+        content = self._read_text(target)
+        source = content.splitlines(keepends=True)
+        matches = [index for index, line in enumerate(source) if anchor in line.rstrip("\r\n")]
+        if len(matches) != 1:
+            raise JobRejected(f"anchor line must occur exactly once; found {len(matches)}")
+        newline = "\r\n" if "\r\n" in content else "\n"
+        insertion = "".join(line + newline for line in lines)
+        offset = matches[0] + 1
+        updated = "".join(source[:offset]) + insertion + "".join(source[offset:])
+        self._write(target, updated)
+        return f"inserted {len(lines)} lines after line {offset} in {path}"
+
     def write_file(self, path: str, content: str) -> str:
         target = self._path(path, may_create=True)
         self._write(target, content)
@@ -297,6 +318,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "search", "description": "Literal text search in repository files.", "parameters": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}, "path": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "replace_text", "description": "Replace text that occurs exactly once in a file.", "parameters": {"type": "object", "required": ["path", "old", "new"], "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "replace_lines", "description": "Replace an inclusive line range from a recent read_file result. Prefer this when an exact text replacement is fragile. Include any required trailing newline in new.", "parameters": {"type": "object", "required": ["path", "start_line", "end_line", "new"], "properties": {"path": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "new": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "insert_after", "description": "Insert new source lines after a unique existing line fragment. Pass each new line as a separate string without newline escapes. Prefer this for additive multiline edits.", "parameters": {"type": "object", "required": ["path", "anchor", "lines"], "properties": {"path": {"type": "string"}, "anchor": {"type": "string"}, "lines": {"type": "array", "minItems": 1, "maxItems": 400, "items": {"type": "string"}}}}}},
     {"type": "function", "function": {"name": "write_file", "description": "Write a required product or test file inside the repository. Never create scratch, demo, manual verification, or duplicate test files.", "parameters": {"type": "object", "required": ["path", "content"], "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "finish", "description": "Finish after edits and checks are complete.", "parameters": {"type": "object", "required": ["summary"], "properties": {"summary": {"type": "string"}}}}},
 ]
@@ -409,7 +431,7 @@ class JobRunner:
             "content": (
                 "You are a bounded coding editor. Work only through the provided tools. "
                 "Inspect before editing, make the smallest change satisfying the instruction, "
-                "Use replace_lines on a recently read narrow range when replace_text would require a large or fragile exact match. "
+                "Use insert_after with an array of literal lines for additive multiline edits. Use replace_lines on a recently read narrow range only when existing lines must change. "
                 "follow the repository's existing file and test layout, and avoid ad-hoc verification scripts. "
                 "If the instruction does not require a new file or new tests, do not create any new file; use approved checks for verification. "
                 "When adding an alias or fallback, preserve existing behavior and precedence and check overlap cases. "
@@ -468,10 +490,10 @@ class JobRunner:
                     try:
                         result = self._invoke(workspace, name, arguments, set(checks))
                     except JobRejected as exc:
-                        if name not in {"replace_text", "replace_lines"}:
+                        if name not in {"replace_text", "replace_lines", "insert_after"}:
                             raise
                         result = {"accepted": False, "error": str(exc)}
-                    if name in {"replace_text", "replace_lines", "write_file"} and not (
+                    if name in {"replace_text", "replace_lines", "insert_after", "write_file"} and not (
                         isinstance(result, dict) and result.get("accepted") is False
                     ):
                         repeated_calls.clear()
@@ -549,6 +571,8 @@ class JobRunner:
             return workspace.replace_lines(
                 args["path"], args["start_line"], args["end_line"], args["new"]
             )
+        if name == "insert_after":
+            return workspace.insert_after(args["path"], args["anchor"], args["lines"])
         if name == "write_file":
             return workspace.write_file(args["path"], args["content"])
         if name == "run_check":

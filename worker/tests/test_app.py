@@ -279,6 +279,21 @@ class WorkspaceSafetyTest(unittest.TestCase):
         with self.assertRaisesRegex(JobRejected, "range is invalid"):
             self.workspace.replace_lines("hello.txt", 4, 4, "nope\n")
 
+    def test_structured_insert_uses_unique_anchor_and_literal_lines(self) -> None:
+        (self.repo / "hello.txt").write_text("alpha\nanchor here\nomega\n", encoding="utf-8")
+        result = self.workspace.insert_after(
+            "hello.txt", "anchor here", ["    first()", "    second()"]
+        )
+        self.assertEqual(result, "inserted 2 lines after line 2 in hello.txt")
+        self.assertEqual(
+            (self.repo / "hello.txt").read_text(encoding="utf-8"),
+            "alpha\nanchor here\n    first()\n    second()\nomega\n",
+        )
+        with self.assertRaisesRegex(JobRejected, "exactly once"):
+            self.workspace.insert_after("hello.txt", "missing", ["line"])
+        with self.assertRaisesRegex(JobRejected, "without newline"):
+            self.workspace.insert_after("hello.txt", "anchor here", ["bad\nline"])
+
     def test_qwen_text_tool_markup_is_strictly_adapted(self) -> None:
         calls = parse_text_tool_calls(
             "<function=replace_text><parameter=path>hello.txt</parameter>"
