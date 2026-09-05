@@ -391,6 +391,25 @@ class JobRunnerSafetyTest(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertIn("+first", result["diff"])
 
+    def test_insert_after_accepts_double_encoded_line_array_from_model(self) -> None:
+        encoded = json.dumps(json.dumps(["first", "second"]))
+        runner = JobRunner(self.config, FakeModel([
+            {"role": "assistant", "tool_calls": [{"function": {
+                "name": "insert_after", "arguments": {
+                    "path": "hello.txt", "anchor": "hello world", "lines": encoded,
+                },
+            }}]},
+            {"role": "assistant", "tool_calls": [{"function": {
+                "name": "finish", "arguments": {"summary": "done"},
+            }}]},
+        ]))
+        result = runner.run({
+            "kind": "edit", "workspace": "fixture", "instruction": "Insert.",
+            "tools": ["insert_after", "finish"],
+        })
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("+second", result["diff"])
+
     def test_rejects_concurrent_job(self) -> None:
         model = BlockingModel()
         runner = JobRunner(self.config, model)

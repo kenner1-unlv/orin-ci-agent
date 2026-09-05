@@ -596,11 +596,13 @@ class JobRunner:
             )
         if name == "insert_after":
             lines = args["lines"]
-            if isinstance(lines, str):
+            for _ in range(3):
+                if not isinstance(lines, str):
+                    break
                 try:
                     lines = json.loads(lines)
                 except json.JSONDecodeError:
-                    pass
+                    break
             return workspace.insert_after(args["path"], args["anchor"], lines)
         if name == "write_file":
             return workspace.write_file(args["path"], args["content"])
