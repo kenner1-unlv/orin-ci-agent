@@ -343,10 +343,34 @@ class JobRunnerSafetyTest(unittest.TestCase):
             {"kind": "edit", "workspace": "fixture", "instruction": "x", "checks": ["shell"]},
             {"kind": "edit", "workspace": "fixture", "instruction": "x", "checks": ["git_diff_check"] * 6},
             {"kind": "edit", "workspace": "fixture", "instruction": "x" * 8001},
+            {"kind": "edit", "workspace": "fixture", "instruction": "x", "tools": ["shell", "finish"]},
+            {"kind": "edit", "workspace": "fixture", "instruction": "x", "tools": ["read_file"]},
         ]
         for request in invalid:
             with self.subTest(request=request), self.assertRaises(JobRejected):
                 runner.run(request)
+
+    def test_job_tool_allowlist_is_exposed_and_enforced(self) -> None:
+        class InspectingModel:
+            def __init__(self):
+                self.tool_names = []
+
+            def chat(self, _messages, tools):
+                self.tool_names = [tool["function"]["name"] for tool in tools]
+                return {"role": "assistant", "tool_calls": [{"function": {
+                    "name": "replace_text",
+                    "arguments": {"path": "hello.txt", "old": "hello", "new": "goodbye"},
+                }}]}
+
+        model = InspectingModel()
+        runner = JobRunner(self.config, model)
+        result = runner.run({
+            "kind": "edit", "workspace": "fixture", "instruction": "Inspect it.",
+            "tools": ["read_file", "finish"],
+        })
+        self.assertEqual(model.tool_names, ["read_file", "finish"])
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("not authorized", result["message"])
 
     def test_rejects_concurrent_job(self) -> None:
         model = BlockingModel()

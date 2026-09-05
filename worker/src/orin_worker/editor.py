@@ -402,7 +402,7 @@ class JobRunner:
             self._lock.release()
 
     def _run(self, request: dict[str, Any]) -> dict[str, Any]:
-        if set(request) - {"kind", "workspace", "instruction", "checks"}:
+        if set(request) - {"kind", "workspace", "instruction", "checks", "tools"}:
             raise JobRejected("request contains unsupported fields")
         if request.get("kind") != "edit":
             raise JobRejected("kind must be edit")
@@ -412,6 +412,17 @@ class JobRunner:
         checks = request.get("checks", ["git_diff_check"])
         if not isinstance(checks, list) or len(checks) > 5 or any(x not in CHECKS for x in checks):
             raise JobRejected("checks must contain only approved check IDs")
+        known_tools = {tool["function"]["name"] for tool in TOOLS}
+        allowed_tools = request.get("tools", sorted(known_tools))
+        if (
+            not isinstance(allowed_tools, list)
+            or not allowed_tools
+            or len(set(allowed_tools)) != len(allowed_tools)
+            or any(name not in known_tools for name in allowed_tools)
+            or "finish" not in allowed_tools
+        ):
+            raise JobRejected("tools must be unique known tool names and include finish")
+        exposed_tools = [tool for tool in TOOLS if tool["function"]["name"] in allowed_tools]
         workspace = Workspace(
             self.config.worktree_root, request.get("workspace", ""),
             self.config.max_file_bytes, self.config.max_output_chars,
@@ -422,6 +433,7 @@ class JobRunner:
         record: dict[str, Any] = {
             "id": job_id, "kind": "edit", "workspace": request["workspace"],
             "instruction": instruction, "checks_requested": checks, "status": "running",
+            "tools_allowed": allowed_tools,
             "created_at": _now(), "tool_calls": [], "model_turns": [],
         }
         self._save(record)
@@ -453,11 +465,11 @@ class JobRunner:
                 request_chars = len(json.dumps(messages, separators=(",", ":")))
                 turn_started = time.monotonic()
                 try:
-                    message = self.model.chat(messages, TOOLS, timeout_seconds=remaining)
+                    message = self.model.chat(messages, exposed_tools, timeout_seconds=remaining)
                 except TypeError as exc:
                     if "timeout_seconds" not in str(exc):
                         raise
-                    message = self.model.chat(messages, TOOLS)
+                    message = self.model.chat(messages, exposed_tools)
                 turn = {
                     "ordinal": ordinal,
                     "wall_seconds": round(time.monotonic() - turn_started, 3),
@@ -488,9 +500,11 @@ class JobRunner:
                     if repeat_count >= 5:
                         raise JobFailed(f"model repeated the same {name} call without progress")
                     try:
-                        result = self._invoke(workspace, name, arguments, set(checks))
+                        result = self._invoke(
+                            workspace, name, arguments, set(checks), set(allowed_tools)
+                        )
                     except JobRejected as exc:
-                        if name not in {"replace_text", "replace_lines", "insert_after"}:
+                        if name not in allowed_tools or name not in {"replace_text", "replace_lines", "insert_after"}:
                             raise
                         result = {"accepted": False, "error": str(exc)}
                     if name in {"replace_text", "replace_lines", "insert_after", "write_file"} and not (
@@ -554,9 +568,14 @@ class JobRunner:
                 "original_chars": len(content),
             })
 
-    def _invoke(self, workspace: Workspace, name: str, args: dict[str, Any], allowed: set[str]) -> Any:
+    def _invoke(
+        self, workspace: Workspace, name: str, args: dict[str, Any],
+        allowed: set[str], allowed_tools: set[str] | None = None,
+    ) -> Any:
         if not isinstance(args, dict):
             raise JobRejected("tool arguments must be an object")
+        if allowed_tools is not None and name not in allowed_tools:
+            raise JobRejected("model requested a tool not authorized for this job")
         if name == "list_files":
             return workspace.list_files(args.get("path", "."))
         if name == "read_file":
