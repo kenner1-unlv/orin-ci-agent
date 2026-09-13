@@ -51,9 +51,10 @@ def _run(root: Path, argv: Sequence[str], timeout: int = 300, *, binary: bool = 
     env.update({"GIT_OPTIONAL_LOCKS": "0", "PYTHONDONTWRITEBYTECODE": "1"})
     env.setdefault("UV_CACHE_DIR", str(root.parent / ".ci-uv-cache"))
     env.setdefault("UV_PYTHON_INSTALL_DIR", str(root.parent / ".ci-uv-python"))
+    text_options = {} if binary else {"text": True, "encoding": "utf-8", "errors": "surrogateescape"}
     return subprocess.run(
         list(argv), cwd=root, stdin=subprocess.DEVNULL, capture_output=True,
-        text=not binary, timeout=timeout, check=False, shell=False, env=env,
+        timeout=timeout, check=False, shell=False, env=env, **text_options,
     )
 
 

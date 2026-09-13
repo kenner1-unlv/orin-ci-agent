@@ -14,7 +14,7 @@ from control_plane_reviewer.review import ReviewError, _now, validate_workspace
 def _git(root: Path, *args: str) -> str:
     try:
         result = subprocess.run(
-            ("git", *args), cwd=root, text=True, capture_output=True,
+            ("git", *args), cwd=root, text=True, encoding="utf-8", errors="surrogateescape", capture_output=True,
             stdin=subprocess.DEVNULL, check=False, shell=False, timeout=300,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
