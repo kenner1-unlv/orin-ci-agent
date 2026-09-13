@@ -1,6 +1,6 @@
 # Orin CI Agent
 
-A local-first coding-agent pipeline built around a Jetson Orin 64 GB running a bounded 30B coding model, with an independent Windows control plane responsible for review, CI, and promotion.
+A local-first coding-agent pipeline built around a Jetson Orin 64 GB running a bounded coding model, with an independent Windows control plane responsible for review, CI, and promotion.
 
 Generated code is treated as an untrusted submission. The Orin worker can inspect and edit an assigned repository, but cannot run arbitrary shell commands, commit, push, merge, or deploy. Completed jobs are reconstructed in a disposable local IDE sandbox, checked independently, and may only become a local Git commit through the CI-controlled promotion gate.
 
@@ -15,7 +15,7 @@ Task + accepted specification
           |
           v
 Jetson Orin bounded worker
-  Qwen3-Coder 30B via Ollama
+  Configured local model via Ollama
           |
           | completed job record + base Git bundle + patch
           v
@@ -39,7 +39,7 @@ Planned diagrams belong in [`docs/images/`](docs/images/README.md). Suggested as
 
 ## Current results
 
-The deployed model is `qwen3-coder:30b-a3b-q4_K_M`, served locally on the Orin with deterministic sampling.
+The September 12, 2026 live audit found `devstral-small-2:24b-instruct-2512-q4_K_M` configured and loaded on Orin. All four deployed worker source files matched this checkout. The results below are the earlier **Qwen3-Coder 30B baseline**, not Devstral benchmark results.
 
 | Evaluation | Result |
 |---|---:|
@@ -126,7 +126,9 @@ are never overwritten.
 
 ## Project status
 
-The bounded worker, model runtime, repository evaluation harness, local sandbox intake, independent review gate, and CI-only local promotion are implemented and tested. The next validation is a real medium-sized coding task in a clean external repository, followed by human review of its CI-approved patch.
+The bounded worker, model runtime, repository evaluation harness, local sandbox intake, independent review gate, and CI-only local promotion are implemented. The Windows gate suite passed 26 tests on September 12, 2026, including UTF-8 and binary-output regression coverage.
+
+The pipeline has delivered bounded Beverage Ops Control Tower changes. Direct case costs and performance instrumentation are merged in that repository. Rejected-import deletion (issue #51, PR #52) still needs its evidence-recovery review finding resolved and browser approval. Loader consolidation (#43) is a separate Windows-authored local candidate, not an Orin delivery. Further progressive-rendering work follows those checkpoints. See [the current runtime audit](docs/MODEL_RUNTIME.md) for the distinction between deployed configuration and historical benchmark results.
 
 ## Documentation
 
