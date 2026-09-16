@@ -1,5 +1,21 @@
 # Orin Model Benchmarks
 
+## Final hardware decision
+
+These results establish that the Orin 64 GB can host useful local coding models:
+the Qwen baseline reached 90.24% HumanEval pass@1, 94.4% across the improved
+three-run repository evaluation, and passed the final bounded-worker acceptance
+gate. They also show why it should not remain the primary machine for this
+repository-coding workflow. Generation speed, end-to-end tool-loop latency, and
+semantic variability still impose too much waiting and supervision for regular
+engineering work.
+
+Continue this workload on a substantially more powerful workstation or
+server-class accelerator. Retain the Orin for robotics, sensor processing, and
+bounded edge inference, where its compact form factor and low power draw are
+valuable. The benchmark artifacts below remain the evidence for that decision;
+they should not be interpreted as a general rejection of the device.
+
 ## 2026-09-03 baseline
 
 Target configuration:

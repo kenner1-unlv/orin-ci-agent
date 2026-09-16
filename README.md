@@ -52,6 +52,21 @@ The September 12, 2026 live audit found `devstral-small-2:24b-instruct-2512-q4_K
 
 See [the complete benchmark report](docs/MODEL_BENCHMARKS.md) for methodology, limitations, raw artifacts, and earlier baselines.
 
+## Hardware conclusion
+
+The experiment showed that the Jetson Orin can run a capable local coding model,
+and the bounded pipeline can safely turn some of its patches into reviewed
+commits. It is not the hardware target we would choose for continued autonomous
+repository work. Model throughput, tool-loop latency, and inconsistent semantic
+results make the workflow slower and less dependable than the engineering work
+requires. The next iteration should use a substantially more powerful
+workstation or server-class accelerator.
+
+The Orin remains a good fit for robotics, sensor processing, and bounded edge
+inference where its compact size and low power draw matter. This conclusion is
+about matching hardware to the coding workload, not a finding that the Orin or
+its local models are generally ineffective.
+
 ## Safety model
 
 - The worker receives one named Git worktree and begins from a clean state.
@@ -126,9 +141,15 @@ are never overwritten.
 
 ## Project status
 
-The bounded worker, model runtime, repository evaluation harness, local sandbox intake, independent review gate, and CI-only local promotion are implemented. The Windows gate suite passed 26 tests on September 12, 2026, including UTF-8 and binary-output regression coverage.
+The bounded worker, model runtime, repository evaluation harness, local sandbox intake, independent review gate, and CI-only local promotion are implemented. The Windows gate suite passed 26 tests on September 12, 2026, including UTF-8 and binary-output regression coverage. The Orin coding experiment is now concluded; further repository-agent development should target more powerful hardware, while the device remains available for robotics and low-power edge workloads.
 
-The pipeline has delivered bounded Beverage Ops Control Tower changes. Direct case costs and performance instrumentation are merged in that repository. Rejected-import deletion (issue #51, PR #52) still needs its evidence-recovery review finding resolved and browser approval. Loader consolidation (#43) is a separate Windows-authored local candidate, not an Orin delivery. Further progressive-rendering work follows those checkpoints. See [the current runtime audit](docs/MODEL_RUNTIME.md) for the distinction between deployed configuration and historical benchmark results.
+The pipeline delivered bounded Beverage Ops Control Tower changes and established
+which kinds of work the Orin handled well: small mechanical edits with narrow
+scope, explicit tools, fixed checks, and independent review. Larger changes that
+required sustained repository navigation or semantic debugging needed frequent
+control-plane correction. See [the current runtime audit](docs/MODEL_RUNTIME.md)
+for the distinction between the deployed configuration and historical benchmark
+results.
 
 ## Documentation
 
