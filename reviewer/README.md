@@ -11,3 +11,9 @@ Approval means the recorded and local patches match, all selected checks passed,
 Only the CI promotion entry point, `scripts/promote-worker-job.ps1`, may turn an approved patch into a local commit. It reruns all mandatory CI checks, rejects stale evidence or a dirty index, stages only reviewed paths, verifies the staged patch fingerprint, and disables repository hooks. It has no push, merge, tag, deploy, network, or check-bypass option.
 
 `scripts/import-worker-submission.ps1` is the intake boundary. Orin exports only its completed job record, base Git bundle, and recorded patch. CI reconstructs these under ignored `.ci-sandboxes/<job-id>/worktree`, then runs all fixed review checks locally. Intake never commits; “completed on Orin” means submitted for CI, not promoted.
+
+`scripts/handoff-promoted-worker-base.ps1` is the chaining boundary. It accepts only a
+clean workspace whose `HEAD` equals the commit in a successful promotion artifact,
+creates and hashes an exact Git bundle, and transfers it into a new Orin workspace.
+The remote side verifies the hash and commit, removes the bundle remote, refuses to
+overwrite an existing workspace, and writes a durable handoff marker for auditing.

@@ -1,6 +1,19 @@
 # Local Coding Model Runtime
 
-## Pinned components
+## Current deployed configuration — audited September 12, 2026
+
+- Configured and loaded model: `devstral-small-2:24b-instruct-2512-q4_K_M`
+- Loaded context: 32,768 tokens
+- Worker limits: 30 iterations and 300 seconds per job
+- Worker release: `20260905T011029Z`; health and readiness checks passed
+- All four deployed `src/orin_worker/*.py` source hashes matched the local checkout
+- Latest persisted job completed or failed on September 6; no #43 workspace was present
+
+The model is selected by the deployed `WORKER_MODEL` environment setting. The
+checked-in example still uses Qwen as an installation default. No Devstral
+benchmark equivalence is implied by the historical Qwen results below.
+
+## Original Qwen baseline components
 
 - Model: `qwen3-coder:30b-a3b-q4_K_M`
 - Published size: 19 GB
@@ -32,7 +45,7 @@ The first coding executor may read an assigned worktree and write only within th
 
 Available baseline commands include Bash, Git, ripgrep, jq, curl, Python 3, CMake, Make, GCC/G++, sed, awk, grep, find, patch, tar, and sha256sum. Command availability does not itself authorize execution; the future coding job contract defines the allowlist and writable worktree.
 
-## Verified operation
+## Historical Qwen operation
 
 - `orin-model.service` is enabled and active as a persistent user service.
 - The endpoint is listening only on `127.0.0.1:11434`.

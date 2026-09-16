@@ -5,6 +5,7 @@ import html
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -41,24 +42,30 @@ class EditorSettings:
     artifact_dir: Path
     model_url: str = "http://127.0.0.1:11434"
     model: str = "qwen3-coder:30b-a3b-q4_K_M"
-    max_iterations: int = 20
+    max_iterations: int = 30
     max_file_bytes: int = 1_000_000
     max_output_chars: int = 65_536
+    max_read_lines: int = 400
     timeout_seconds: int = 300
+    think: bool = False
+    context_tokens: int = 32_768
 
 
 CHECKS: dict[str, list[str]] = {
     "git_diff_check": ["git", "diff", "--check"],
-    "python_unittest": ["python3", "-B", "-m", "unittest", "discover", "-s", "tests", "-v"],
+    "python_unittest": [sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-v"],
     "python_compileall": [
-        "python3", "-B", "-c",
+        sys.executable, "-B", "-c",
         "import pathlib; [compile(p.read_bytes(), str(p), 'exec') for p in pathlib.Path('.').rglob('*.py') if '.git' not in p.parts]",
     ],
 }
 
 
 class Workspace:
-    def __init__(self, root: Path, name: str, max_file_bytes: int, max_output_chars: int):
+    def __init__(
+        self, root: Path, name: str, max_file_bytes: int, max_output_chars: int,
+        max_read_lines: int = 400,
+    ):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
             raise JobRejected("workspace must be a simple name")
         base = root.resolve()
@@ -68,6 +75,8 @@ class Workspace:
         self.root = path
         self.max_file_bytes = max_file_bytes
         self.max_output_chars = max_output_chars
+        self.max_read_lines = max_read_lines
+        self.max_observation_chars = min(max_output_chars, 16_384)
         probe = self._run(["git", "rev-parse", "--show-toplevel"])
         if probe.returncode or Path(probe.stdout.strip()).resolve() != self.root:
             raise JobRejected("workspace must be the root of a Git worktree")
@@ -110,11 +119,27 @@ class Workspace:
             if len(entries) >= 1000:
                 entries.append("...[file limit reached]")
                 break
-        return _trim("\n".join(entries), self.max_output_chars)
+        return _trim("\n".join(entries), self.max_observation_chars)
 
-    def read_file(self, path: str) -> str:
+    def read_file(
+        self, path: str, start_line: int | None = None, end_line: int | None = None
+    ) -> str:
         target = self._path(path)
-        return _trim(self._read_text(target), self.max_output_chars)
+        content = self._read_text(target)
+        lines = content.splitlines(keepends=True)
+        if start_line is None:
+            start_line = 1
+        if end_line is None:
+            end_line = min(len(lines), start_line + self.max_read_lines - 1)
+        if start_line < 1 or end_line < start_line:
+            raise JobRejected("read line range is invalid")
+        if end_line - start_line + 1 > self.max_read_lines:
+            raise JobRejected(f"read range exceeds {self.max_read_lines} lines")
+        if start_line > max(1, len(lines)):
+            raise JobRejected("read start line exceeds file length")
+        selected = "".join(lines[start_line - 1:end_line])
+        header = f"[lines {start_line}-{min(end_line, len(lines))} of {len(lines)}]\n"
+        return header + _trim(selected, self.max_observation_chars)
 
     def _read_text(self, target: Path) -> str:
         if not target.is_file() or target.is_symlink():
@@ -147,7 +172,7 @@ class Workspace:
                     matches.append(f"{item.relative_to(self.root).as_posix()}:{number}:{line}")
                     if len(matches) >= 200:
                         break
-        return _trim("\n".join(matches), self.max_output_chars)
+        return _trim("\n".join(matches), self.max_observation_chars)
 
     def replace_text(self, path: str, old: str, new: str) -> str:
         if not old:
@@ -160,6 +185,40 @@ class Workspace:
         updated = content.replace(old, new, 1)
         self._write(target, updated)
         return f"updated {path}"
+
+    def replace_lines(self, path: str, start_line: int, end_line: int, new: str) -> str:
+        """Replace an inclusive, previously-read line range without matching a large text block."""
+        target = self._path(path)
+        content = self._read_text(target)
+        lines = content.splitlines(keepends=True)
+        if start_line < 1 or end_line < start_line or end_line > len(lines):
+            raise JobRejected("replacement line range is invalid")
+        if end_line - start_line + 1 > self.max_read_lines:
+            raise JobRejected(f"replacement range exceeds {self.max_read_lines} lines")
+        updated = "".join(lines[:start_line - 1]) + new + "".join(lines[end_line:])
+        self._write(target, updated)
+        return f"updated {path} lines {start_line}-{end_line}"
+
+    def insert_after(self, path: str, anchor: str, lines: list[str]) -> str:
+        """Insert literal lines after one unique existing line, avoiding multiline escaping."""
+        if not anchor or "\n" in anchor or "\r" in anchor:
+            raise JobRejected("anchor must be one nonempty line fragment")
+        if not isinstance(lines, list) or not lines or len(lines) > self.max_read_lines:
+            raise JobRejected("insert lines must be a nonempty bounded list")
+        if any(not isinstance(line, str) or "\n" in line or "\r" in line for line in lines):
+            raise JobRejected("each inserted line must be a string without newline characters")
+        target = self._path(path)
+        content = self._read_text(target)
+        source = content.splitlines(keepends=True)
+        matches = [index for index, line in enumerate(source) if anchor in line.rstrip("\r\n")]
+        if len(matches) != 1:
+            raise JobRejected(f"anchor line must occur exactly once; found {len(matches)}")
+        newline = "\r\n" if "\r\n" in content else "\n"
+        insertion = "".join(line + newline for line in lines)
+        offset = matches[0] + 1
+        updated = "".join(source[:offset]) + insertion + "".join(source[offset:])
+        self._write(target, updated)
+        return f"inserted {len(lines)} lines after line {offset} in {path}"
 
     def write_file(self, path: str, content: str) -> str:
         target = self._path(path, may_create=True)
@@ -205,21 +264,36 @@ class Workspace:
 
 class OllamaClient:
     def __init__(self, base_url: str, model: str, timeout: int,
-                 temperature: float = 0.0, seed: int = 0):
+                 temperature: float = 0.0, seed: int = 0, *, think: bool = False,
+                 context_tokens: int = 32_768):
         self.url = base_url.rstrip("/") + "/api/chat"
         self.model = model
         self.timeout = timeout
         self.temperature = temperature
         self.seed = seed
+        self.think = think
+        self.context_tokens = context_tokens
+        self.last_metrics: dict[str, Any] = {}
 
-    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    def chat(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         body = json.dumps({
             "model": self.model, "messages": messages, "tools": tools, "stream": False,
-            "options": {"temperature": self.temperature, "seed": self.seed},
+            "think": self.think,
+            "options": {
+                "temperature": self.temperature,
+                "seed": self.seed,
+                "num_ctx": self.context_tokens,
+            },
         }).encode()
         request = Request(self.url, data=body, headers={"Content-Type": "application/json"})
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            request_timeout = self.timeout if timeout_seconds is None else min(
+                self.timeout, max(0.1, timeout_seconds)
+            )
+            with urlopen(request, timeout=request_timeout) as response:
                 payload = json.load(response)
         except HTTPError as exc:
             detail = _trim(exc.read().decode("utf-8", errors="replace"), 2000)
@@ -227,23 +301,61 @@ class OllamaClient:
         message = payload.get("message")
         if not isinstance(message, dict):
             raise JobFailed("model returned an invalid response")
+        self.last_metrics = {
+            key: payload.get(key)
+            for key in (
+                "total_duration", "load_duration", "prompt_eval_count",
+                "prompt_eval_duration", "eval_count", "eval_duration",
+            )
+            if payload.get(key) is not None
+        }
         return message
 
 
 TOOLS = [
     {"type": "function", "function": {"name": "list_files", "description": "List text-file candidates in the assigned repository.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}},
-    {"type": "function", "function": {"name": "read_file", "description": "Read one UTF-8 text file.", "parameters": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "read_file", "description": "Read a bounded line range from one UTF-8 text file. Defaults to its first 400 lines; use search to locate content and request a narrow range.", "parameters": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}}}}},
     {"type": "function", "function": {"name": "search", "description": "Literal text search in repository files.", "parameters": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}, "path": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "replace_text", "description": "Replace text that occurs exactly once in a file.", "parameters": {"type": "object", "required": ["path", "old", "new"], "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "replace_lines", "description": "Replace an inclusive line range from a recent read_file result. Prefer this when an exact text replacement is fragile. Include any required trailing newline in new.", "parameters": {"type": "object", "required": ["path", "start_line", "end_line", "new"], "properties": {"path": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "new": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "insert_after", "description": "Insert new source lines after a unique existing line fragment. Pass each new line as a separate string without newline escapes. Prefer this for additive multiline edits.", "parameters": {"type": "object", "required": ["path", "anchor", "lines"], "properties": {"path": {"type": "string"}, "anchor": {"type": "string"}, "lines": {"type": "array", "minItems": 1, "maxItems": 400, "items": {"type": "string"}}}}}},
     {"type": "function", "function": {"name": "write_file", "description": "Write a required product or test file inside the repository. Never create scratch, demo, manual verification, or duplicate test files.", "parameters": {"type": "object", "required": ["path", "content"], "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}}},
-    {"type": "function", "function": {"name": "run_check", "description": "Run one check approved in the job request.", "parameters": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "finish", "description": "Finish after edits and checks are complete.", "parameters": {"type": "object", "required": ["summary"], "properties": {"summary": {"type": "string"}}}}},
 ]
 
 
 def parse_text_tool_calls(content: str) -> list[dict[str, Any]]:
-    """Adapt Qwen's documented textual tool markup when Ollama does not parse it."""
+    """Adapt strict Qwen textual tool envelopes when Ollama does not parse them."""
     calls: list[dict[str, Any]] = []
+    stripped = content.strip()
+    wrapped = re.fullmatch(r"<tool_call>\s*(.*?)\s*</tool_call>", stripped, re.DOTALL)
+    if wrapped:
+        stripped = wrapped.group(1)
+    envelopes: list[Any] = []
+    decoder = json.JSONDecoder()
+    offset = 0
+    try:
+        while offset < len(stripped):
+            envelope, offset = decoder.raw_decode(stripped, offset)
+            envelopes.append(envelope)
+            while offset < len(stripped) and stripped[offset].isspace():
+                offset += 1
+    except (json.JSONDecodeError, TypeError):
+        envelopes = []
+    if envelopes and all(
+        isinstance(envelope, dict)
+        and isinstance(envelope.get("name"), str)
+        and isinstance(envelope.get("arguments"), dict)
+        and set(envelope) == {"name", "arguments"}
+        for envelope in envelopes
+    ):
+        return [
+            {
+                "function": {"name": envelope["name"], "arguments": envelope["arguments"]},
+                "text_fallback": True,
+            }
+            for envelope in envelopes
+        ]
     pattern = re.compile(r"<function=([A-Za-z_][A-Za-z0-9_]*)>(.*?)</function>", re.DOTALL)
     parameter = re.compile(r"<parameter=([A-Za-z_][A-Za-z0-9_]*)>(.*?)</parameter>", re.DOTALL)
     for match in pattern.finditer(content):
@@ -255,7 +367,10 @@ def parse_text_tool_calls(content: str) -> list[dict[str, Any]]:
 class JobRunner:
     def __init__(self, config: EditorSettings, model_client: Any | None = None):
         self.config = config
-        self.model = model_client or OllamaClient(config.model_url, config.model, config.timeout_seconds)
+        self.model = model_client or OllamaClient(
+            config.model_url, config.model, config.timeout_seconds,
+            think=config.think, context_tokens=config.context_tokens,
+        )
         self._lock = threading.Lock()
 
     @property
@@ -287,7 +402,7 @@ class JobRunner:
             self._lock.release()
 
     def _run(self, request: dict[str, Any]) -> dict[str, Any]:
-        if set(request) - {"kind", "workspace", "instruction", "checks"}:
+        if set(request) - {"kind", "workspace", "instruction", "checks", "tools"}:
             raise JobRejected("request contains unsupported fields")
         if request.get("kind") != "edit":
             raise JobRejected("kind must be edit")
@@ -297,16 +412,29 @@ class JobRunner:
         checks = request.get("checks", ["git_diff_check"])
         if not isinstance(checks, list) or len(checks) > 5 or any(x not in CHECKS for x in checks):
             raise JobRejected("checks must contain only approved check IDs")
+        known_tools = {tool["function"]["name"] for tool in TOOLS}
+        allowed_tools = request.get("tools", sorted(known_tools))
+        if (
+            not isinstance(allowed_tools, list)
+            or not allowed_tools
+            or len(set(allowed_tools)) != len(allowed_tools)
+            or any(name not in known_tools for name in allowed_tools)
+            or "finish" not in allowed_tools
+        ):
+            raise JobRejected("tools must be unique known tool names and include finish")
+        exposed_tools = [tool for tool in TOOLS if tool["function"]["name"] in allowed_tools]
         workspace = Workspace(
             self.config.worktree_root, request.get("workspace", ""),
             self.config.max_file_bytes, self.config.max_output_chars,
+            self.config.max_read_lines,
         )
         workspace.require_clean()
         job_id = uuid.uuid4().hex
         record: dict[str, Any] = {
             "id": job_id, "kind": "edit", "workspace": request["workspace"],
             "instruction": instruction, "checks_requested": checks, "status": "running",
-            "created_at": _now(), "tool_calls": [],
+            "tools_allowed": allowed_tools,
+            "created_at": _now(), "tool_calls": [], "model_turns": [],
         }
         self._save(record)
         started = time.monotonic()
@@ -315,25 +443,48 @@ class JobRunner:
             "content": (
                 "You are a bounded coding editor. Work only through the provided tools. "
                 "Inspect before editing, make the smallest change satisfying the instruction, "
+                "Use insert_after with an array of literal lines for additive multiline edits. Use replace_lines on a recently read narrow range only when existing lines must change. "
                 "follow the repository's existing file and test layout, and avoid ad-hoc verification scripts. "
                 "If the instruction does not require a new file or new tests, do not create any new file; use approved checks for verification. "
                 "When adding an alias or fallback, preserve existing behavior and precedence and check overlap cases. "
                 "A test check that discovers zero tests is a failure; place tests where the approved check finds them. "
-                "run relevant approved checks, then call finish. Do not ask for shell, network, "
+                "Checks run automatically after finish; do not request or simulate check tools. "
+                "Call finish only after the required edits are complete. Do not ask for shell, network, "
                 "commits, credentials, or paths outside the assigned repository."
             ),
         }, {"role": "user", "content": f"Instruction: {instruction}\nApproved checks: {', '.join(checks)}"}]
         summary = "Model completed without a summary."
+        repeated_calls: dict[str, int] = {}
         try:
             for ordinal in range(1, self.config.max_iterations + 1):
                 if time.monotonic() - started > self.config.timeout_seconds:
                     raise JobFailed("job time limit exceeded")
-                message = self.model.chat(messages, TOOLS)
+                remaining = self.config.timeout_seconds - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise JobFailed("job time limit exceeded")
+                request_chars = len(json.dumps(messages, separators=(",", ":")))
+                turn_started = time.monotonic()
+                try:
+                    message = self.model.chat(messages, exposed_tools, timeout_seconds=remaining)
+                except TypeError as exc:
+                    if "timeout_seconds" not in str(exc):
+                        raise
+                    message = self.model.chat(messages, exposed_tools)
+                turn = {
+                    "ordinal": ordinal,
+                    "wall_seconds": round(time.monotonic() - turn_started, 3),
+                    "request_chars": request_chars,
+                    "response_content": _trim(str(message.get("content") or ""), 2000),
+                    "native_tool_call_count": len(message.get("tool_calls") or []),
+                }
+                metrics = getattr(self.model, "last_metrics", None)
+                if metrics:
+                    turn["ollama"] = metrics
+                record["model_turns"].append(turn)
                 messages.append(message)
                 calls = message.get("tool_calls") or parse_text_tool_calls(str(message.get("content") or ""))
                 if not calls:
-                    summary = str(message.get("content") or summary)
-                    break
+                    raise JobFailed("model stopped without calling finish")
                 finished = False
                 for call in calls:
                     function = call.get("function", {})
@@ -341,8 +492,30 @@ class JobRunner:
                     arguments = function.get("arguments", {})
                     if isinstance(arguments, str):
                         arguments = json.loads(arguments)
-                    result = self._invoke(workspace, name, arguments, set(checks))
-                    record["tool_calls"].append({"ordinal": ordinal, "name": name, "result": result})
+                    signature = json.dumps(
+                        {"name": name, "arguments": arguments}, sort_keys=True, separators=(",", ":")
+                    )
+                    repeated_calls[signature] = repeated_calls.get(signature, 0) + 1
+                    repeat_count = repeated_calls[signature]
+                    if repeat_count >= 5:
+                        raise JobFailed(f"model repeated the same {name} call without progress")
+                    try:
+                        result = self._invoke(
+                            workspace, name, arguments, set(checks), set(allowed_tools)
+                        )
+                    except JobRejected as exc:
+                        if name not in allowed_tools or name not in {"replace_text", "replace_lines", "insert_after"}:
+                            raise
+                        result = {"accepted": False, "error": str(exc)}
+                    if name in {"replace_text", "replace_lines", "insert_after", "write_file"} and not (
+                        isinstance(result, dict) and result.get("accepted") is False
+                    ):
+                        repeated_calls.clear()
+                    record["tool_calls"].append({
+                        "ordinal": ordinal, "name": name,
+                        "arguments": _trim(json.dumps(arguments), 4000),
+                        "result": result,
+                    })
                     if name == "finish":
                         summary = arguments["summary"]
                         finished = True
@@ -350,15 +523,28 @@ class JobRunner:
                         messages.append({"role": "user", "content": f"Tool result for {name}:\n{json.dumps(result)}\nContinue using a tool call."})
                     else:
                         messages.append({"role": "tool", "tool_name": name, "content": json.dumps(result)})
+                    if repeat_count == 3:
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Recovery required: this identical tool call has made no progress three times. "
+                                "Do not repeat it. Re-read a narrow current range, then use replace_lines or choose a different edit."
+                            ),
+                        })
                 self._save(record)
                 if finished:
                     break
+                self._compact_tool_results(messages)
             else:
                 raise JobFailed("model tool-iteration limit exceeded")
             check_results = [workspace.run_check(name, set(checks)) for name in checks]
             status, diff = workspace.evidence()
             record.update({
-                "status": "completed" if all(x["exit_code"] == 0 for x in check_results) else "failed",
+                "status": (
+                    "completed" if diff and all(x["exit_code"] == 0 for x in check_results)
+                    else "no_change" if not diff and all(x["exit_code"] == 0 for x in check_results)
+                    else "failed"
+                ),
                 "summary": _trim(summary, 4000), "checks": check_results,
                 "git_status": status, "diff": diff, "finished_at": _now(),
             })
@@ -372,17 +558,52 @@ class JobRunner:
         (artifact / "diff.patch").write_text(record.get("diff", ""), encoding="utf-8")
         return record
 
-    def _invoke(self, workspace: Workspace, name: str, args: dict[str, Any], allowed: set[str]) -> Any:
+    @staticmethod
+    def _compact_tool_results(messages: list[dict[str, Any]], keep: int = 2) -> None:
+        tool_indexes = [
+            index for index, message in enumerate(messages) if message.get("role") == "tool"
+        ]
+        for index in tool_indexes[:-keep]:
+            message = messages[index]
+            content = str(message.get("content", ""))
+            message["content"] = json.dumps({
+                "compacted": True,
+                "tool_name": message.get("tool_name"),
+                "original_chars": len(content),
+            })
+
+    def _invoke(
+        self, workspace: Workspace, name: str, args: dict[str, Any],
+        allowed: set[str], allowed_tools: set[str] | None = None,
+    ) -> Any:
         if not isinstance(args, dict):
             raise JobRejected("tool arguments must be an object")
+        if allowed_tools is not None and name not in allowed_tools:
+            raise JobRejected("model requested a tool not authorized for this job")
         if name == "list_files":
             return workspace.list_files(args.get("path", "."))
         if name == "read_file":
-            return workspace.read_file(args["path"])
+            return workspace.read_file(
+                args["path"], args.get("start_line"), args.get("end_line")
+            )
         if name == "search":
             return workspace.search(args["query"], args.get("path", "."))
         if name == "replace_text":
             return workspace.replace_text(args["path"], args["old"], args["new"])
+        if name == "replace_lines":
+            return workspace.replace_lines(
+                args["path"], args["start_line"], args["end_line"], args["new"]
+            )
+        if name == "insert_after":
+            lines = args["lines"]
+            for _ in range(3):
+                if not isinstance(lines, str):
+                    break
+                try:
+                    lines = json.loads(lines)
+                except json.JSONDecodeError:
+                    break
+            return workspace.insert_after(args["path"], args["anchor"], lines)
         if name == "write_file":
             return workspace.write_file(args["path"], args["content"])
         if name == "run_check":

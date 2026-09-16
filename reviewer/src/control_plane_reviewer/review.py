@@ -4,9 +4,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
+import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,9 +49,33 @@ def _trim(value: str) -> str:
 def _run(root: Path, argv: Sequence[str], timeout: int = 300, *, binary: bool = False) -> subprocess.CompletedProcess[Any]:
     env = os.environ.copy()
     env.update({"GIT_OPTIONAL_LOCKS": "0", "PYTHONDONTWRITEBYTECODE": "1"})
+    env.setdefault("UV_CACHE_DIR", str(root.parent / ".ci-uv-cache"))
+    env.setdefault("UV_PYTHON_INSTALL_DIR", str(root.parent / ".ci-uv-python"))
+    text_options = {} if binary else {"text": True, "encoding": "utf-8", "errors": "surrogateescape"}
     return subprocess.run(
         list(argv), cwd=root, stdin=subprocess.DEVNULL, capture_output=True,
-        text=not binary, timeout=timeout, check=False, shell=False, env=env,
+        timeout=timeout, check=False, shell=False, env=env, **text_options,
+    )
+
+
+def check_command(root: Path, check_id: str) -> tuple[str, ...]:
+    """Resolve a trusted check ID using the reviewed repository's declared tooling."""
+    if check_id != "python_unittest":
+        return CHECKS[check_id]
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return CHECKS[check_id]
+    try:
+        project = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return CHECKS[check_id]
+    if "pytest" not in project.get("tool", {}):
+        return CHECKS[check_id]
+    uv = shutil.which("uv") or "uv"
+    basetemp = root.parent / f".ci-pytest-{root.name}-{uuid.uuid4().hex}"
+    return (
+        uv, "run", "--isolated", "--project", ".", "--extra", "dev", "--python", "3.12",
+        "pytest", "-q", "--tb=short", "-p", "no:cacheprovider", "--basetemp", str(basetemp),
     )
 
 
@@ -184,7 +210,7 @@ def review(job_path: Path, workspace: Path, allow_paths: Sequence[str], checks: 
     for check_id in checks:
         began = time.monotonic()
         try:
-            process = _run(root, CHECKS[check_id])
+            process = _run(root, check_command(root, check_id))
             status = "passed" if process.returncode == 0 else "failed"
             output_text = process.stdout + process.stderr
             if check_id == "python_unittest" and re.search(r"Ran 0 tests?", output_text):

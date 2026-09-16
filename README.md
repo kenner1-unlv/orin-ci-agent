@@ -1,6 +1,6 @@
 # Orin CI Agent
 
-A local-first coding-agent pipeline built around a Jetson Orin 64 GB running a bounded 30B coding model, with an independent Windows control plane responsible for review, CI, and promotion.
+A local-first coding-agent pipeline built around a Jetson Orin 64 GB running a bounded coding model, with an independent Windows control plane responsible for review, CI, and promotion.
 
 Generated code is treated as an untrusted submission. The Orin worker can inspect and edit an assigned repository, but cannot run arbitrary shell commands, commit, push, merge, or deploy. Completed jobs are reconstructed in a disposable local IDE sandbox, checked independently, and may only become a local Git commit through the CI-controlled promotion gate.
 
@@ -15,7 +15,7 @@ Task + accepted specification
           |
           v
 Jetson Orin bounded worker
-  Qwen3-Coder 30B via Ollama
+  Configured local model via Ollama
           |
           | completed job record + base Git bundle + patch
           v
@@ -39,7 +39,7 @@ Planned diagrams belong in [`docs/images/`](docs/images/README.md). Suggested as
 
 ## Current results
 
-The deployed model is `qwen3-coder:30b-a3b-q4_K_M`, served locally on the Orin with deterministic sampling.
+The September 12, 2026 live audit found `devstral-small-2:24b-instruct-2512-q4_K_M` configured and loaded on Orin. All four deployed worker source files matched this checkout. The results below are the earlier **Qwen3-Coder 30B baseline**, not Devstral benchmark results.
 
 | Evaluation | Result |
 |---|---:|
@@ -51,6 +51,21 @@ The deployed model is `qwen3-coder:30b-a3b-q4_K_M`, served locally on the Orin w
 | Local intake/review/promotion suite | 18/18 passing |
 
 See [the complete benchmark report](docs/MODEL_BENCHMARKS.md) for methodology, limitations, raw artifacts, and earlier baselines.
+
+## Hardware conclusion
+
+The experiment showed that the Jetson Orin can run a capable local coding model,
+and the bounded pipeline can safely turn some of its patches into reviewed
+commits. It is not the hardware target we would choose for continued autonomous
+repository work. Model throughput, tool-loop latency, and inconsistent semantic
+results make the workflow slower and less dependable than the engineering work
+requires. The next iteration should use a substantially more powerful
+workstation or server-class accelerator.
+
+The Orin remains a good fit for robotics, sensor processing, and bounded edge
+inference where its compact size and low power draw matter. This conclusion is
+about matching hardware to the coding workload, not a finding that the Orin or
+its local models are generally ineffective.
 
 ## Safety model
 
@@ -108,9 +123,33 @@ After inspecting an approved artifact, the CI agent can create a local commit:
 
 Promotion is intentionally local. Publication and deployment are separate decisions.
 
+Chain an approved promotion into a new clean Orin workspace for the next bounded job:
+
+```powershell
+./scripts/handoff-promoted-worker-base.ps1 `
+  -PromotionArtifact '.ci-artifacts/<job-id>-promotion.json' `
+  -Workspace '.ci-sandboxes/<job-id>/worktree' `
+  -RemoteWorkspace '<new-clean-workspace-name>' `
+  -Target sauce-bot `
+  -Output '.ci-artifacts/<job-id>-handoff.json'
+```
+
+The handoff accepts only the exact clean commit named by a successful CI promotion
+artifact. Orin verifies the bundle digest and commit, creates a new detached worktree
+without a Git remote, and records a durable handoff marker. Existing remote workspaces
+are never overwritten.
+
 ## Project status
 
-The bounded worker, model runtime, repository evaluation harness, local sandbox intake, independent review gate, and CI-only local promotion are implemented and tested. The next validation is a real medium-sized coding task in a clean external repository, followed by human review of its CI-approved patch.
+The bounded worker, model runtime, repository evaluation harness, local sandbox intake, independent review gate, and CI-only local promotion are implemented. The Windows gate suite passed 26 tests on September 12, 2026, including UTF-8 and binary-output regression coverage. The Orin coding experiment is now concluded; further repository-agent development should target more powerful hardware, while the device remains available for robotics and low-power edge workloads.
+
+The pipeline delivered bounded Beverage Ops Control Tower changes and established
+which kinds of work the Orin handled well: small mechanical edits with narrow
+scope, explicit tools, fixed checks, and independent review. Larger changes that
+required sustained repository navigation or semantic debugging needed frequent
+control-plane correction. See [the current runtime audit](docs/MODEL_RUNTIME.md)
+for the distinction between the deployed configuration and historical benchmark
+results.
 
 ## Documentation
 

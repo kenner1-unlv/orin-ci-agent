@@ -15,8 +15,10 @@ INTAKE_CHECKS = ("git_diff_check", "python_unittest", "python_compileall")
 
 def _command(argv: Sequence[str], cwd: Path) -> str:
     try:
-        result = subprocess.run(list(argv), cwd=cwd, text=True, capture_output=True,
-                                stdin=subprocess.DEVNULL, check=False, shell=False, timeout=300)
+        result = subprocess.run(
+            list(argv), cwd=cwd, text=True, encoding="utf-8", errors="surrogateescape",
+            capture_output=True, stdin=subprocess.DEVNULL, check=False, shell=False, timeout=300,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ReviewError(f"intake command failed: {type(exc).__name__}") from exc
     if result.returncode:

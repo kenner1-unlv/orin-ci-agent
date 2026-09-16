@@ -29,6 +29,8 @@ class OllamaClientTest(unittest.TestCase):
         client = OllamaClient("http://127.0.0.1:11434", "model", 30)
         self.assertEqual(client.temperature, 0.0)
         self.assertEqual(client.seed, 0)
+        self.assertFalse(client.think)
+        self.assertEqual(client.context_tokens, 32_768)
 
 
 class BlockingModel:
@@ -135,7 +137,7 @@ class WorkerApiTest(unittest.TestCase):
         ])
         status, result = self.post({"kind": "edit", "workspace": "fixture", "instruction": "Leave it unchanged."})
         self.assertEqual(status, 201)
-        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["status"], "no_change")
         self.assertEqual(result["diff"], "")
         self.assertEqual(result["git_status"], "")
 
@@ -215,6 +217,18 @@ class WorkspaceSafetyTest(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(JobRejected):
                 self.workspace.read_file(path)
 
+    def test_read_file_returns_bounded_line_ranges(self) -> None:
+        (self.repo / "lines.txt").write_text(
+            "".join(f"line {number}\n" for number in range(1, 501)), encoding="utf-8"
+        )
+        excerpt = self.workspace.read_file("lines.txt", 120, 125)
+        self.assertTrue(excerpt.startswith("[lines 120-125 of 500]\n"))
+        self.assertIn("line 120", excerpt)
+        self.assertIn("line 125", excerpt)
+        self.assertNotIn("line 119", excerpt)
+        with self.assertRaisesRegex(JobRejected, "exceeds 400 lines"):
+            self.workspace.read_file("lines.txt", 1, 401)
+
     def test_requires_clean_repository(self) -> None:
         (self.repo / "hello.txt").write_text("dirty\n", encoding="utf-8")
         with self.assertRaises(JobRejected):
@@ -254,6 +268,32 @@ class WorkspaceSafetyTest(unittest.TestCase):
         with self.assertRaises(JobRejected):
             self.workspace.replace_text("hello.txt", "missing", "new")
 
+    def test_line_range_replacement_uses_recent_line_coordinates(self) -> None:
+        (self.repo / "hello.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+        result = self.workspace.replace_lines("hello.txt", 2, 2, "changed\n")
+        self.assertEqual(result, "updated hello.txt lines 2-2")
+        self.assertEqual(
+            (self.repo / "hello.txt").read_text(encoding="utf-8"),
+            "one\nchanged\nthree\n",
+        )
+        with self.assertRaisesRegex(JobRejected, "range is invalid"):
+            self.workspace.replace_lines("hello.txt", 4, 4, "nope\n")
+
+    def test_structured_insert_uses_unique_anchor_and_literal_lines(self) -> None:
+        (self.repo / "hello.txt").write_text("alpha\nanchor here\nomega\n", encoding="utf-8")
+        result = self.workspace.insert_after(
+            "hello.txt", "anchor here", ["    first()", "    second()"]
+        )
+        self.assertEqual(result, "inserted 2 lines after line 2 in hello.txt")
+        self.assertEqual(
+            (self.repo / "hello.txt").read_text(encoding="utf-8"),
+            "alpha\nanchor here\n    first()\n    second()\nomega\n",
+        )
+        with self.assertRaisesRegex(JobRejected, "exactly once"):
+            self.workspace.insert_after("hello.txt", "missing", ["line"])
+        with self.assertRaisesRegex(JobRejected, "without newline"):
+            self.workspace.insert_after("hello.txt", "anchor here", ["bad\nline"])
+
     def test_qwen_text_tool_markup_is_strictly_adapted(self) -> None:
         calls = parse_text_tool_calls(
             "<function=replace_text><parameter=path>hello.txt</parameter>"
@@ -262,6 +302,29 @@ class WorkspaceSafetyTest(unittest.TestCase):
         self.assertEqual(calls[0]["function"]["name"], "replace_text")
         self.assertEqual(calls[0]["function"]["arguments"]["path"], "hello.txt")
         self.assertEqual(parse_text_tool_calls("please run a shell"), [])
+
+    def test_qwen_json_tool_envelope_is_strictly_adapted(self) -> None:
+        calls = parse_text_tool_calls(
+            '{"name":"read_file","arguments":{"path":"hello.txt","start_line":1}}'
+        )
+        self.assertEqual(calls[0]["function"]["name"], "read_file")
+        self.assertEqual(calls[0]["function"]["arguments"]["path"], "hello.txt")
+        self.assertTrue(calls[0]["text_fallback"])
+        self.assertEqual(
+            parse_text_tool_calls(
+                '{"name":"read_file","arguments":{"path":"hello.txt"},"extra":true}'
+            ),
+            [],
+        )
+        wrapped = parse_text_tool_calls(
+            '<tool_call>\n{"name":"read_file","arguments":{"path":"hello.txt"}}\n</tool_call>'
+        )
+        self.assertEqual(wrapped[0]["function"]["name"], "read_file")
+        multiple = parse_text_tool_calls(
+            '{"name":"read_file","arguments":{"path":"one.py"}}\n'
+            '{"name":"read_file","arguments":{"path":"two.py"}}'
+        )
+        self.assertEqual([call["function"]["arguments"]["path"] for call in multiple], ["one.py", "two.py"])
 
 
 class JobRunnerSafetyTest(unittest.TestCase):
@@ -280,10 +343,72 @@ class JobRunnerSafetyTest(unittest.TestCase):
             {"kind": "edit", "workspace": "fixture", "instruction": "x", "checks": ["shell"]},
             {"kind": "edit", "workspace": "fixture", "instruction": "x", "checks": ["git_diff_check"] * 6},
             {"kind": "edit", "workspace": "fixture", "instruction": "x" * 8001},
+            {"kind": "edit", "workspace": "fixture", "instruction": "x", "tools": ["shell", "finish"]},
+            {"kind": "edit", "workspace": "fixture", "instruction": "x", "tools": ["read_file"]},
         ]
         for request in invalid:
             with self.subTest(request=request), self.assertRaises(JobRejected):
                 runner.run(request)
+
+    def test_job_tool_allowlist_is_exposed_and_enforced(self) -> None:
+        class InspectingModel:
+            def __init__(self):
+                self.tool_names = []
+
+            def chat(self, _messages, tools):
+                self.tool_names = [tool["function"]["name"] for tool in tools]
+                return {"role": "assistant", "tool_calls": [{"function": {
+                    "name": "replace_text",
+                    "arguments": {"path": "hello.txt", "old": "hello", "new": "goodbye"},
+                }}]}
+
+        model = InspectingModel()
+        runner = JobRunner(self.config, model)
+        result = runner.run({
+            "kind": "edit", "workspace": "fixture", "instruction": "Inspect it.",
+            "tools": ["read_file", "finish"],
+        })
+        self.assertEqual(model.tool_names, ["read_file", "finish"])
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("not authorized", result["message"])
+
+    def test_insert_after_accepts_json_encoded_line_array_from_model(self) -> None:
+        runner = JobRunner(self.config, FakeModel([
+            {"role": "assistant", "tool_calls": [{"function": {
+                "name": "insert_after", "arguments": {
+                    "path": "hello.txt", "anchor": "hello world",
+                    "lines": '["first", "second"]',
+                },
+            }}]},
+            {"role": "assistant", "tool_calls": [{"function": {
+                "name": "finish", "arguments": {"summary": "done"},
+            }}]},
+        ]))
+        result = runner.run({
+            "kind": "edit", "workspace": "fixture", "instruction": "Insert.",
+            "tools": ["insert_after", "finish"],
+        })
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("+first", result["diff"])
+
+    def test_insert_after_accepts_double_encoded_line_array_from_model(self) -> None:
+        encoded = json.dumps(json.dumps(["first", "second"]))
+        runner = JobRunner(self.config, FakeModel([
+            {"role": "assistant", "tool_calls": [{"function": {
+                "name": "insert_after", "arguments": {
+                    "path": "hello.txt", "anchor": "hello world", "lines": encoded,
+                },
+            }}]},
+            {"role": "assistant", "tool_calls": [{"function": {
+                "name": "finish", "arguments": {"summary": "done"},
+            }}]},
+        ]))
+        result = runner.run({
+            "kind": "edit", "workspace": "fixture", "instruction": "Insert.",
+            "tools": ["insert_after", "finish"],
+        })
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("+second", result["diff"])
 
     def test_rejects_concurrent_job(self) -> None:
         model = BlockingModel()
@@ -306,6 +431,52 @@ class JobRunnerSafetyTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["error"], "JobRejected")
         self.assertEqual(result["diff"], "")
+
+    def test_failed_exact_replace_can_recover_with_line_range(self) -> None:
+        runner = JobRunner(self.config, FakeModel([
+            {"role": "assistant", "tool_calls": [{"function": {"name": "replace_text", "arguments": {
+                "path": "hello.txt", "old": "missing", "new": "goodbye"
+            }}}]},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "replace_lines", "arguments": {
+                "path": "hello.txt", "start_line": 1, "end_line": 1, "new": "goodbye world\n"
+            }}}]},
+            {"role": "assistant", "tool_calls": [{"function": {
+                "name": "finish", "arguments": {"summary": "Recovered."}
+            }}]},
+        ]))
+        result = runner.run({"kind": "edit", "workspace": "fixture", "instruction": "Change it."})
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["tool_calls"][0]["result"]["accepted"], False)
+        self.assertIn("+goodbye world", result["diff"])
+
+    def test_repeated_identical_call_fails_boundedly(self) -> None:
+        call = {"role": "assistant", "tool_calls": [{"function": {
+            "name": "read_file", "arguments": {"path": "hello.txt"}
+        }}]}
+        runner = JobRunner(self.config, FakeModel([call] * 5))
+        result = runner.run({"kind": "edit", "workspace": "fixture", "instruction": "Change it."})
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("repeated the same read_file call", result["message"])
+        self.assertEqual(len(result["tool_calls"]), 4)
+
+    def test_model_must_explicitly_finish(self) -> None:
+        runner = JobRunner(self.config, FakeModel([
+            {"role": "assistant", "content": "done"},
+        ]))
+        result = runner.run({"kind": "edit", "workspace": "fixture", "instruction": "Change it."})
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["message"], "model stopped without calling finish")
+
+    def test_old_tool_results_are_compacted(self) -> None:
+        messages = [
+            {"role": "tool", "tool_name": "read_file", "content": "a" * 100},
+            {"role": "tool", "tool_name": "search", "content": "b" * 100},
+            {"role": "tool", "tool_name": "read_file", "content": "latest"},
+        ]
+        JobRunner._compact_tool_results(messages, keep=1)
+        self.assertIn('"compacted": true', messages[0]["content"])
+        self.assertIn('"compacted": true', messages[1]["content"])
+        self.assertEqual(messages[2]["content"], "latest")
 
 
 if __name__ == "__main__":

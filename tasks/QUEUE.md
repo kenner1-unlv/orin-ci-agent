@@ -9,7 +9,16 @@
 - [x] Define local health/readiness endpoints and reserve the versioned `/v1/jobs` interface.
 - [x] Install and verify a persistent localhost-only Qwen3-Coder model service on the Jetson GPU.
 - [x] Implement and deploy the bounded coding-job executor over disposable worktrees and the approved basic-tool policy.
-- [ ] Connect the CI/PM control plane to create assigned worktrees and review returned patches.
+- [x] Connect the CI/PM control plane to create assigned worktrees and review returned patches.
+
+## Beverage Ops checkpoints — September 12, 2026
+
+- [x] Audit deployed worker source against this checkout and distinguish current Devstral configuration from historical Qwen benchmarks.
+- [x] Verify 26 local CI gate tests, including text and binary subprocess encoding.
+- [ ] Resolve PR #52's evidence-recovery finding and browser-review rejected-import deletion.
+- [ ] Browser-review #43 loader consolidation and capture before/after browser timings.
+- [ ] Prepare the validated Beverage changes for merge with review findings resolved.
+- [ ] Begin #44 progressive rendering after the preceding checkpoints pass.
 
 ## Later
 

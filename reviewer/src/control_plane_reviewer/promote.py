@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Sequence
 
-from control_plane_reviewer.review import CHECKS, ReviewError, _now, _run, _trim, canonical_patch, changed_paths, state_fingerprint, validate_workspace
+from control_plane_reviewer.review import ReviewError, _now, _run, _trim, canonical_patch, changed_paths, check_command, state_fingerprint, validate_workspace
 
 
 PROMOTION_CHECKS = ("git_diff_check", "python_unittest", "python_compileall")
@@ -45,7 +45,7 @@ def _run_ci_checks(root: Path) -> list[dict[str, Any]]:
     for check_id in PROMOTION_CHECKS:
         began = time.monotonic()
         try:
-            process = _run(root, CHECKS[check_id])
+            process = _run(root, check_command(root, check_id))
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ReviewError(f"mandatory CI check {check_id} unavailable: {type(exc).__name__}") from exc
         output = process.stdout + process.stderr
